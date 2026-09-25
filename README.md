@@ -9,8 +9,12 @@ extract structured fields, check them against the checklist, and draft next
 steps. **Every suggestion is stored as a `ProposedAction` that a human must
 approve.** The AI layer has no write access to case state.
 
-> Portfolio project. The domain is generic and every document, name, country,
-> and organisation in it is fictional. It runs fully offline with a
+> **Where this comes from:** this repo is a simplified, public version of the
+> AI architecture from a production case-management system I built. The
+> production code is private; the core design here is the same.
+>
+> The domain is kept generic, and every document, name, country, and
+> organisation in this repo is fictional. It runs fully offline with a
 > deterministic mock LLM, so no API key is needed.
 
 ---
