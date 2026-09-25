@@ -1,7 +1,9 @@
+import threading
+
 import pytest
 
 from agents.base import AgentError
-from agents.pipeline import run_case_review
+from agents.pipeline import REVIEW_GRAPH, run_case_review
 from agents.providers import CompletionRequest, CompletionResponse, MockProvider
 from agents.schemas import ActionKind, RequirementStatus
 
@@ -76,3 +78,41 @@ def test_checklist_failure_aborts_the_review(snapshot):
 
     with pytest.raises(AgentError, match="ChecklistAgent"):
         run_case_review(snapshot, BrokenChecklist())
+
+
+# ------------------------------------------------------------------ LangGraph behaviour
+
+
+def test_graph_shape():
+    assert set(REVIEW_GRAPH.get_graph().nodes) == {
+        "__start__",
+        "review_document",
+        "evaluate_checklist",
+        "plan_next_steps",
+        "__end__",
+    }
+
+
+def test_documents_are_reviewed_in_parallel(snapshot):
+    """Both Send branches must be in flight at the same time, or the barrier times out."""
+    barrier = threading.Barrier(2, timeout=5)
+
+    class Rendezvous(MockProvider):
+        def complete(self, request):
+            first_turn = not any(m.role == "tool" for m in request.messages)
+            if request.output_schema_name == "DocumentExtractionResult" and first_turn:
+                barrier.wait()  # raises BrokenBarrierError if the branches run one after another
+            return super().complete(request)
+
+    result = run_case_review(snapshot, Rendezvous())
+    assert [e.document_id for e in result.extractions] == [10, 11]
+
+
+def test_no_pending_documents_skips_the_fan_out(snapshot):
+    done = snapshot.model_copy(
+        update={"documents": [d.model_copy(update={"status": "rejected"}) for d in snapshot.documents]}
+    )
+    result = run_case_review(done, MockProvider())
+
+    assert [t.agent for t in result.traces] == ["ChecklistAgent", "NextStepAgent"]
+    assert {e.status for e in result.evaluation.evaluations} == {RequirementStatus.MISSING}

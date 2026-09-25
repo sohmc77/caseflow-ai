@@ -1,22 +1,29 @@
-"""The agent loop: tool use, then a validated structured output.
+"""The agent loop as a LangGraph ``StateGraph``: tool use, then a validated structured output.
 
-    ┌─ provider.complete(messages, tools, output schema)
-    │    ├─ tool calls? → validate args → run tool → append results → loop
-    │    └─ final JSON  → validate against output_schema (+ run-specific context)
-    │                        ├─ ok      → return AgentResult
-    └──────────────────────  └─ invalid → append the errors, ask for a fix (bounded)
+    START ─▶ call_model ──tool calls──▶ run_tools ──┐
+                 ▲    └──final answer─▶ validate ───┤
+                 │                                  ├─ output set ─────────▶ END
+                 │                                  ├─ retries exhausted ──▶ END (error)
+                 │                                  ├─ turn budget spent ──▶ give_up ─▶ END
+                 └──────────── otherwise ───────────┘
 
-Subclasses declare what they need: a prompt, tools, an output schema, and
-optionally extra validation context. They do not write their own loop.
+Validation is a first-class node, not something tacked on after the loop. Its
+outcome (accept, retry with feedback, or give up) is an explicit edge in the
+graph. Subclasses declare a prompt, tools, an output schema, and optionally
+extra validation context. They do not write their own loop.
+
+Run ``python -m agents.visualize`` to print this graph as Mermaid.
 """
 
 import json
-from dataclasses import dataclass, field
-from typing import Any, ClassVar, Generic, TypeVar
+import operator
+from dataclasses import dataclass
+from typing import Annotated, Any, ClassVar, Generic, Literal, TypedDict, TypeVar
 
+from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ValidationError
 
-from .providers.base import CompletionRequest, LLMProvider, Message
+from .providers.base import CompletionRequest, CompletionResponse, LLMProvider, Message
 from .schemas import AgentStep, AgentTrace
 from .tools import AgentContext, Tool, ToolError
 
@@ -45,15 +52,22 @@ class AgentResult(Generic[OutT]):
     trace: AgentTrace
 
 
-@dataclass
-class _RunState:
-    messages: list[Message]
-    tool_log: list[ToolInvocation] = field(default_factory=list)
-    steps: list[AgentStep] = field(default_factory=list)
-    turns: int = 0
-    retries: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
+class AgentState(TypedDict, total=False):
+    # Inputs, fixed for the run.
+    task: BaseModel
+    ctx: AgentContext
+    # Append-only channels: nodes return new items, LangGraph concatenates them.
+    messages: Annotated[list[Message], operator.add]
+    steps: Annotated[list[AgentStep], operator.add]
+    tool_log: Annotated[list[ToolInvocation], operator.add]
+    # Overwritten by the node that owns them.
+    response: CompletionResponse
+    turns: int
+    retries: int
+    input_tokens: int
+    output_tokens: int
+    output: BaseModel
+    error: str
 
 
 class Agent(Generic[InT, OutT]):
@@ -67,69 +81,122 @@ class Agent(Generic[InT, OutT]):
     def __init__(self, provider: LLMProvider):
         self.provider = provider
         self._tools = {t.name: t for t in self.tools}
+        self._request_base = {
+            "tools": [t.spec() for t in self.tools],
+            "output_schema_name": self.output_schema.__name__,
+            "output_json_schema": self.output_schema.model_json_schema(),
+        }
+        self.graph = self._build_graph()
 
     def validation_context(self, task: InT, ctx: AgentContext, tool_log: list[ToolInvocation]) -> dict[str, Any]:
         """Extra facts the output validators check against (see schemas/)."""
         return {}
 
     def run(self, task: InT, ctx: AgentContext) -> AgentResult[OutT]:
-        state = _RunState(
-            messages=[
+        initial: AgentState = {
+            "task": task,
+            "ctx": ctx,
+            "messages": [
                 Message(role="system", content=self.system_prompt),
                 Message(role="user", content=task.model_dump_json()),
-            ]
-        )
-        request_base = {
-            "tools": [t.spec() for t in self.tools],
-            "output_schema_name": self.output_schema.__name__,
-            "output_json_schema": self.output_schema.model_json_schema(),
+            ],
+            "steps": [],
+            "tool_log": [],
+            "turns": 0,
+            "retries": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+        # Each turn visits at most three nodes; the turn budget, not LangGraph's
+        # recursion limit, is what should stop a runaway loop.
+        final = self.graph.invoke(initial, config={"recursion_limit": self.max_turns * 3 + 5})
+        trace = self._trace(final)
+        if "output" in final:
+            return AgentResult(output=final["output"], trace=trace)
+        raise AgentError(final["error"], trace)
+
+    # ------------------------------------------------------------------ graph
+
+    def _build_graph(self):
+        graph = StateGraph(AgentState)
+        graph.add_node("call_model", self._call_model)
+        graph.add_node("run_tools", self._run_tools)
+        graph.add_node("validate", self._validate)
+        graph.add_node("give_up", self._give_up)
+
+        graph.add_edge(START, "call_model")
+        graph.add_conditional_edges("call_model", self._route_response, ["run_tools", "validate"])
+        graph.add_conditional_edges("run_tools", self._route_next, ["call_model", "give_up", END])
+        graph.add_conditional_edges("validate", self._route_next, ["call_model", "give_up", END])
+        graph.add_edge("give_up", END)
+        return graph.compile(name=self.name)
+
+    def _call_model(self, state: AgentState) -> AgentState:
+        response = self.provider.complete(CompletionRequest(messages=state["messages"], **self._request_base))
+        return {
+            "response": response,
+            "turns": state["turns"] + 1,
+            "input_tokens": state["input_tokens"] + response.usage.input_tokens,
+            "output_tokens": state["output_tokens"] + response.usage.output_tokens,
         }
 
-        while state.turns < self.max_turns:
-            state.turns += 1
-            response = self.provider.complete(CompletionRequest(messages=state.messages, **request_base))
-            state.input_tokens += response.usage.input_tokens
-            state.output_tokens += response.usage.output_tokens
+    def _run_tools(self, state: AgentState) -> AgentState:
+        calls = state["response"].tool_calls
+        messages = [Message(role="assistant", tool_calls=calls)]
+        steps, log = [], []
+        for call in calls:
+            content, step, invocation = self._invoke_tool(call.name, call.arguments_json, state["ctx"])
+            messages.append(Message(role="tool", tool_call_id=call.id, name=call.name, content=content))
+            steps.append(step)
+            if invocation:
+                log.append(invocation)
+        return {"messages": messages, "steps": steps, "tool_log": log}
 
-            if response.tool_calls:
-                state.messages.append(Message(role="assistant", tool_calls=response.tool_calls))
-                for call in response.tool_calls:
-                    content = self._invoke_tool(call.name, call.arguments_json, ctx, state)
-                    state.messages.append(Message(role="tool", tool_call_id=call.id, name=call.name, content=content))
-                continue
+    def _validate(self, state: AgentState) -> AgentState:
+        raw = state["response"].content or ""
+        context = self.validation_context(state["task"], state["ctx"], state["tool_log"])
+        try:
+            output = self.output_schema.model_validate_json(raw, context=context)
+        except ValidationError as exc:
+            errors = _summarize(exc)
+            step = AgentStep(type="validation_error", detail={"errors": errors})
+            if state["retries"] >= self.max_validation_retries:
+                attempts = state["retries"] + 1
+                return {
+                    "steps": [step],
+                    "error": f"{self.name}: output failed validation after {attempts} attempts: " + "; ".join(errors),
+                }
+            feedback = (
+                "Your answer failed validation:\n- "
+                + "\n- ".join(errors)
+                + f"\nReturn a corrected {self.output_schema.__name__} as JSON only."
+            )
+            return {
+                "steps": [step],
+                "retries": state["retries"] + 1,
+                "messages": [Message(role="assistant", content=raw), Message(role="user", content=feedback)],
+            }
+        return {"output": output, "steps": [AgentStep(type="output")]}
 
-            raw = response.content or ""
-            try:
-                output = self.output_schema.model_validate_json(
-                    raw, context=self.validation_context(task, ctx, state.tool_log)
-                )
-            except ValidationError as exc:
-                errors = _summarize(exc)
-                state.steps.append(AgentStep(type="validation_error", detail={"errors": errors}))
-                if state.retries >= self.max_validation_retries:
-                    raise AgentError(
-                        f"{self.name}: output failed validation after {state.retries + 1} attempts: "
-                        + "; ".join(errors),
-                        self._trace(state),
-                    ) from exc
-                state.retries += 1
-                state.messages.append(Message(role="assistant", content=raw))
-                state.messages.append(
-                    Message(
-                        role="user",
-                        content="Your answer failed validation:\n- "
-                        + "\n- ".join(errors)
-                        + f"\nReturn a corrected {self.output_schema.__name__} as JSON only.",
-                    )
-                )
-                continue
+    def _give_up(self, state: AgentState) -> AgentState:
+        return {"error": f"{self.name}: no final answer within {self.max_turns} turns"}
 
-            state.steps.append(AgentStep(type="output"))
-            return AgentResult(output=output, trace=self._trace(state))
+    @staticmethod
+    def _route_response(state: AgentState) -> Literal["run_tools", "validate"]:
+        return "run_tools" if state["response"].tool_calls else "validate"
 
-        raise AgentError(f"{self.name}: no final answer within {self.max_turns} turns", self._trace(state))
+    def _route_next(self, state: AgentState) -> str:
+        if "output" in state or "error" in state:
+            return END
+        if state["turns"] >= self.max_turns:
+            return "give_up"
+        return "call_model"
 
-    def _invoke_tool(self, name: str, arguments_json: str, ctx: AgentContext, state: _RunState) -> str:
+    # ------------------------------------------------------------------ helpers
+
+    def _invoke_tool(
+        self, name: str, arguments_json: str, ctx: AgentContext
+    ) -> tuple[str, AgentStep, ToolInvocation | None]:
         """Run one tool call. Errors go back to the model as data instead of being raised."""
         tool = self._tools.get(name)
         try:
@@ -141,22 +208,21 @@ class Agent(Generic[InT, OutT]):
                 raise ToolError("invalid arguments: " + "; ".join(_summarize(exc))) from exc
             result = tool.fn(ctx, args)
         except ToolError as exc:
-            state.steps.append(AgentStep(type="tool_error", detail={"tool": name, "error": str(exc)}))
-            return json.dumps({"error": str(exc)})
+            step = AgentStep(type="tool_error", detail={"tool": name, "error": str(exc)})
+            return json.dumps({"error": str(exc)}), step, None
 
-        state.tool_log.append(ToolInvocation(tool=name, args=args, result=result))
-        state.steps.append(AgentStep(type="tool_call", detail={"tool": name, "args": args.model_dump(mode="json")}))
-        return result.model_dump_json()
+        step = AgentStep(type="tool_call", detail={"tool": name, "args": args.model_dump(mode="json")})
+        return result.model_dump_json(), step, ToolInvocation(tool=name, args=args, result=result)
 
-    def _trace(self, state: _RunState) -> AgentTrace:
+    def _trace(self, state: AgentState) -> AgentTrace:
         return AgentTrace(
             agent=self.name,
             provider=self.provider.name,
-            turns=state.turns,
-            validation_retries=state.retries,
-            input_tokens=state.input_tokens,
-            output_tokens=state.output_tokens,
-            steps=state.steps,
+            turns=state["turns"],
+            validation_retries=state["retries"],
+            input_tokens=state["input_tokens"],
+            output_tokens=state["output_tokens"],
+            steps=state["steps"],
         )
 
 

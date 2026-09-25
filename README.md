@@ -2,8 +2,9 @@
 
 [![ci](https://github.com/sohmc77/caseflow-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/sohmc77/caseflow-ai/actions/workflows/ci.yml)
 
-A Django + DRF backend showing one way to put LLM agents into a document-heavy
-case workflow without letting them change anything on their own.
+A Django + DRF backend with **LangGraph** agent workflows. It shows one way to
+put LLM agents into a document-heavy case workflow without letting them change
+anything on their own.
 
 Staff open a **case** (think visa or permit application). Each case has a
 checklist of required documents. AI agents read the uploaded documents,
@@ -24,6 +25,7 @@ approve.** The AI layer has no write access to case state.
 ## Contents
 
 - [Architecture](#architecture)
+- [Agent orchestration with LangGraph](#agent-orchestration-with-langgraph)
 - [Human approval by design](#human-approval-by-design)
 - [Structured outputs: Pydantic as the trust boundary](#structured-outputs-pydantic-as-the-trust-boundary)
 - [Provider abstraction](#provider-abstraction)
@@ -44,7 +46,7 @@ flowchart TB
         S -->|on_commit| Q[[Celery task]]
     end
 
-    subgraph AGENTS["agents/ (no Django imports)"]
+    subgraph AGENTS["agents/ — LangGraph graphs, no Django imports"]
         direction TB
         SNAP[/CaseSnapshot<br/>immutable, read-only/]
         DR[DocumentReviewAgent] -->|DocumentExtractionResult| CL[ChecklistAgent]
@@ -75,7 +77,8 @@ flowchart TB
    allows only one active run per case.
 2. The task claims the run atomically (`queued → running`), so a redelivered
    task does nothing, and builds a frozen `CaseSnapshot`.
-3. **DocumentReviewAgent** runs once per pending document. It calls
+3. **DocumentReviewAgent** runs once per pending document, **in parallel**
+   (a LangGraph `Send` fan-out). It calls
    `get_document_text` and `get_extraction_schema`, then returns a
    `DocumentExtractionResult`.
 4. **ChecklistAgent** gets the *validated* extractions. It calls
@@ -90,8 +93,81 @@ flowchart TB
    preconditions against the current database state before applying anything.
 
 Each agent is ~40 lines: a prompt, a tuple of tools, an output schema, and
-optionally some validation context. The loop lives once in
-[`agents/base.py`](agents/base.py).
+optionally some validation context. The loop they share is a LangGraph graph,
+described next.
+
+---
+
+## Agent orchestration with LangGraph
+
+LangGraph is used at two levels. Both graphs are real control flow, not
+wrappers around a single call. The diagrams below match what
+`python -m agents.visualize` prints from the compiled graphs.
+
+### 1. The review pipeline: [`agents/pipeline.py`](agents/pipeline.py)
+
+```mermaid
+flowchart TD
+    START([start]) -.->|"Send × N<br/>(one per pending document)"| RD[review_document]
+    START -.->|"no pending documents"| EC[evaluate_checklist]
+    RD --> EC
+    EC --> PN[plan_next_steps]
+    PN --> END_([end])
+```
+
+- **Map-reduce with `Send`.** A conditional edge from `START` returns one
+  `Send("review_document", {...})` per pending document, so the extractions run
+  **in parallel** (capped by `max_concurrency`). A test proves they are in
+  flight at the same time. `extractions`, `failures`, and `traces` are
+  `Annotated[list, operator.add]` channels, so LangGraph merges the branch
+  results, and `evaluate_checklist` runs **once**, after every branch has
+  finished.
+- **Failure isolation per branch.** If one document's agent can't produce a
+  valid extraction, its branch writes to `failures`, not `extractions`. The
+  checklist marks affected requirements `needs_review`, and the planner flags
+  the document for a human. The other branches are not affected.
+- **Fail closed after the fan-in.** If the checklist or planning agent fails,
+  the exception propagates out of `graph.invoke`, the `AgentRun` is marked
+  `failed`, and nothing is proposed.
+- **Dependency injection through `config`.** The LLM provider is passed as
+  `config["configurable"]["provider"]`, so the graph state holds only domain
+  data (snapshot, validated contracts, traces).
+
+### 2. The agent loop: [`agents/base.py`](agents/base.py), shared by all three agents
+
+```mermaid
+flowchart TD
+    START([start]) --> CM[call_model]
+    CM -.->|"tool calls"| RT[run_tools]
+    CM -.->|"final answer"| VA[validate]
+    RT -.->|"turns left"| CM
+    VA -.->|"invalid, retries left<br/>(errors fed back)"| CM
+    VA -.->|"valid"| END_([end])
+    VA -.->|"invalid, retries exhausted"| END_
+    RT -.->|"turn budget spent"| GU[give_up]
+    VA -.->|"turn budget spent"| GU
+    GU --> END_
+```
+
+- **Validation is a node, not an afterthought.** `validate` runs the Pydantic
+  contract with run-specific context (see below). Its three outcomes (accept,
+  retry with the error list, give up) are explicit, testable edges.
+- **Bounded by design.** A turn budget and a validation-retry budget, routed
+  through a `give_up` node. LangGraph's `recursion_limit` is only a backstop.
+- **Typed state with reducers.** `messages`, `steps`, and `tool_log` are
+  append-only channels. Nodes return only what they changed, which keeps each
+  node small and unit-testable.
+- **No LangChain chat models.** Nodes call this project's own `LLMProvider`,
+  so the graph runs fully offline with the mock and stays vendor-neutral.
+  LangGraph handles orchestration; the provider layer handles model I/O.
+
+**Why human approval is *not* a LangGraph `interrupt()`.** LangGraph can pause
+a graph for human input and resume it later from a checkpoint. Here, approvals
+can arrive days later, from different staff, one action at a time, and each
+must be re-checked against the *current* database state. So a review graph
+always runs to completion and ends by writing `ProposedAction` rows. Approval
+is ordinary transactional Django code with row locks and an audit trail. It
+doesn't depend on a long-lived paused graph or a checkpoint store.
 
 ---
 
@@ -151,14 +227,7 @@ document whose extraction keeps failing is treated as `unreviewed`: the
 pipeline continues and flags it for a human instead of dropping the whole
 review.
 
-```text
-provider.complete ─▶ tool_calls? ─yes─▶ validate args ─▶ run tool ─▶ append result ─┐
-        ▲                 │ no                                                      │
-        │                 ▼                                                         │
-        │     output_schema.model_validate_json(raw, context=…)                     │
-        │          │ ok ─▶ return AgentResult(output, trace)                        │
-        └── retry ◀┘ invalid (≤ 2 retries, then AgentError) ◀───────────────────────┘
-```
+This all happens in the `validate` node of the agent graph shown above.
 
 Tool errors (bad arguments, unknown tool, unknown id) go back to the model as
 `{"error": ...}` so it can correct itself. They are not raised.
@@ -291,8 +360,9 @@ The browsable API is at `http://localhost:8000/api/` (log in via
 `createsuperuser` first).
 
 ```bash
-pytest                     # 41 tests, all offline
+pytest                     # 44 tests, all offline
 python -m evals.run        # eval harness
+python -m agents.visualize # print both LangGraph graphs as Mermaid
 ruff check . && ruff format --check .
 ```
 
@@ -329,6 +399,11 @@ All endpoints require authentication.
 This is a portfolio piece. Where it is simplified, it says so.
 
 **Decisions I'd defend in production**
+
+- **LangGraph for control flow, plain code for side effects.** Graphs own the
+  parts that are genuinely graph-shaped: the tool/validate/retry loop and the
+  parallel per-document fan-out. Persistence, approval, and auditing stay in
+  Django services, where transactions and locks live.
 
 - **Deterministic rules stay in code.** Date windows, amount thresholds, and
   name matching are exact checks that LLMs get wrong often enough to matter.
@@ -368,6 +443,10 @@ This is a portfolio piece. Where it is simplified, it says so.
 - **Small eval set.** 21 hand-written cases show the method. They say nothing
   statistical about a model. A real setup would use hundreds of labelled
   (anonymised) documents and track results across prompt and model versions.
+- **No LangGraph checkpointer.** A review is short and idempotent: if a worker
+  dies, the `AgentRun` is marked failed and can be re-triggered. Resuming a
+  half-finished review would need a durable checkpointer (e.g. Postgres), which
+  isn't worth it at this scale.
 - **SQLite and eager Celery by default** for the 5-minute setup. The code uses
   `select_for_update`, `on_commit`, and a partial unique constraint, which
   behave correctly on Postgres. SQLite serialises writes anyway.
@@ -380,11 +459,12 @@ This is a portfolio piece. Where it is simplified, it says so.
 agents/                     framework-agnostic agent layer
   schemas/                  ← every Pydantic contract (start here)
   providers/                LLMProvider interface, mock, OpenAI adapter
-  base.py                   the agent loop: tools → validated output → bounded retry
+  base.py                   the agent loop as a LangGraph StateGraph (call_model → run_tools → validate)
   document_review.py        DocumentReviewAgent
   checklist.py              ChecklistAgent
   next_step.py              NextStepAgent
-  pipeline.py               extract → evaluate → plan
+  pipeline.py               review pipeline graph: Send fan-out per document → checklist → plan
+  visualize.py              prints both graphs as Mermaid
   tools.py                  pure, read-only tools
   rules.py                  deterministic requirement checks
 cases/                      Django app
