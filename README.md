@@ -1,5 +1,7 @@
 # caseflow-ai
 
+[![ci](https://github.com/sohmc77/caseflow-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/sohmc77/caseflow-ai/actions/workflows/ci.yml)
+
 A Django + DRF backend showing one way to put LLM agents into a document-heavy
 case workflow without letting them change anything on their own.
 
