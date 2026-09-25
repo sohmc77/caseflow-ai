@@ -1,0 +1,19 @@
+[project]
+name = "caseflow-ai"
+version = "0.1.0"
+description = "Portfolio demo: human-approved AI agents for document-heavy case management."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["cases/migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["SIM102", "UP046"]  # nested ifs read better in validators; Generic kept for clarity

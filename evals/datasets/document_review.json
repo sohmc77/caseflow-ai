@@ -1,0 +1,239 @@
+[
+  {
+    "id": "passport_labelled",
+    "description": "Clean passport scan, 'Surname and given names' label, DD MON YYYY dates.",
+    "document_lines": [
+      "REPUBLIC OF ARCADIA",
+      "PASSPORT",
+      "Surname and given names: OKAFOR, AMARA",
+      "Passport No: AR4471902",
+      "Nationality: Arcadian",
+      "Date of Birth: 02 FEB 1994",
+      "Date of Expiry: 14 MAR 2031"
+    ],
+    "expected": {
+      "document_type": "passport",
+      "fields": {
+        "full_name": "OKAFOR, AMARA",
+        "passport_number": "AR4471902",
+        "nationality": "Arcadian",
+        "date_of_birth": "1994-02-02",
+        "expiry_date": "2031-03-14"
+      }
+    }
+  },
+  {
+    "id": "passport_numeric_dates",
+    "description": "Different label wording and numeric date formats that need normalising.",
+    "document_lines": [
+      "VELORIA - TRAVEL DOCUMENT - PASSPORT",
+      "Full Name: Lucas Brennan",
+      "Passport Number: VB0098123",
+      "Nationality: Velorian",
+      "DOB: 23/11/1988",
+      "Expiry Date: 05.06.2029"
+    ],
+    "expected": {
+      "document_type": "passport",
+      "fields": {
+        "full_name": "Lucas Brennan",
+        "passport_number": "VB0098123",
+        "nationality": "Velorian",
+        "date_of_birth": "1988-11-23",
+        "expiry_date": "2029-06-05"
+      }
+    }
+  },
+  {
+    "id": "passport_damaged_scan",
+    "description": "Expiry line is corrupted by OCR noise; the correct output omits it rather than guessing.",
+    "document_lines": [
+      "REPUBLIC OF ARCADIA",
+      "PASSPORT",
+      "Name: Mina Farahani",
+      "Passport No: AR1100457",
+      "Nationality: Arcadian",
+      "Date of Birth: 17 AUG 1991",
+      "Date of Exp1ry: 1? JAN 20?8"
+    ],
+    "expected": {
+      "document_type": "passport",
+      "fields": {
+        "full_name": "Mina Farahani",
+        "passport_number": "AR1100457",
+        "nationality": "Arcadian",
+        "date_of_birth": "1991-08-17"
+      }
+    }
+  },
+  {
+    "id": "employment_letter_labelled",
+    "description": "Offer letter with a labelled summary block.",
+    "document_lines": [
+      "Brightline Robotics GmbH",
+      "OFFER OF EMPLOYMENT",
+      "Employee: Amara Okafor",
+      "Employer: Brightline Robotics GmbH",
+      "Job Title: Senior Controls Engineer",
+      "Start Date: 01/02/2027",
+      "Annual Salary: EUR 72,000.00"
+    ],
+    "expected": {
+      "document_type": "employment_letter",
+      "fields": {
+        "employee_name": "Amara Okafor",
+        "employer_name": "Brightline Robotics GmbH",
+        "job_title": "Senior Controls Engineer",
+        "start_date": "2027-02-01",
+        "annual_salary": "72000.00"
+      }
+    }
+  },
+  {
+    "id": "employment_letter_prose",
+    "description": "All facts are in running prose with no labels. Needs real language understanding.",
+    "document_lines": [
+      "Lumen Analytics Ltd",
+      "",
+      "Dear Mina Farahani,",
+      "We are delighted to offer you employment in the position of Data Analyst at",
+      "Lumen Analytics Ltd. Your employment will commence on 3 March 2027, with a",
+      "gross annual salary of EUR 61,500.",
+      "",
+      "Kind regards, Talent Team"
+    ],
+    "expected": {
+      "document_type": "employment_letter",
+      "fields": {
+        "employee_name": "Mina Farahani",
+        "employer_name": "Lumen Analytics Ltd",
+        "job_title": "Data Analyst",
+        "start_date": "2027-03-03",
+        "annual_salary": "61500"
+      }
+    }
+  },
+  {
+    "id": "employment_letter_mentions_passport",
+    "description": "Classification distractor: an offer letter that mentions a passport.",
+    "document_lines": [
+      "OFFER OF EMPLOYMENT",
+      "Employee: Lucas Brennan",
+      "Employer: Harbourview Logistics",
+      "Job Title: Operations Planner",
+      "Start Date: 2027-01-11",
+      "Annual Salary: EUR 54,000",
+      "Please bring your passport to your first day for right-to-work checks."
+    ],
+    "expected": {
+      "document_type": "employment_letter",
+      "fields": {
+        "employee_name": "Lucas Brennan",
+        "employer_name": "Harbourview Logistics",
+        "job_title": "Operations Planner",
+        "start_date": "2027-01-11",
+        "annual_salary": "54000"
+      }
+    }
+  },
+  {
+    "id": "bank_statement_two_balances",
+    "description": "Opening and closing balances both present; only the closing balance is wanted.",
+    "document_lines": [
+      "Northbank Savings",
+      "Account Statement",
+      "Account Holder: Amara Okafor",
+      "Statement Date: 2026-08-31",
+      "Currency: EUR",
+      "Opening Balance: EUR 9,120.40",
+      "Closing Balance: EUR 8,250.00"
+    ],
+    "expected": {
+      "document_type": "bank_statement",
+      "fields": {
+        "account_holder": "Amara Okafor",
+        "statement_date": "2026-08-31",
+        "closing_balance": "8250.00",
+        "currency": "EUR"
+      }
+    }
+  },
+  {
+    "id": "bank_statement_usd_dash_labels",
+    "description": "Dash separators and a non-EUR currency.",
+    "document_lines": [
+      "Coastal Credit Union - Monthly Statement",
+      "Account Name - Lucas Brennan",
+      "Statement Date - 30 September 2026",
+      "Currency - USD",
+      "Closing balance - USD 15,400.10"
+    ],
+    "expected": {
+      "document_type": "bank_statement",
+      "fields": {
+        "account_holder": "Lucas Brennan",
+        "statement_date": "2026-09-30",
+        "closing_balance": "15400.10",
+        "currency": "USD"
+      }
+    }
+  },
+  {
+    "id": "degree_certificate_labelled",
+    "description": "Transcript-style certificate with labels.",
+    "document_lines": [
+      "UNIVERSITY OF EASTMERE",
+      "Degree Certificate",
+      "Graduate: Lucas Brennan",
+      "Degree: Master of Science in Applied Mathematics",
+      "Institution: University of Eastmere",
+      "Date of Award: 30 June 2019"
+    ],
+    "expected": {
+      "document_type": "degree_certificate",
+      "fields": {
+        "graduate_name": "Lucas Brennan",
+        "degree": "Master of Science in Applied Mathematics",
+        "institution": "University of Eastmere",
+        "award_date": "2019-06-30"
+      }
+    }
+  },
+  {
+    "id": "degree_certificate_ceremonial",
+    "description": "Ceremonial wording, no labels, ordinal date. Needs real language understanding.",
+    "document_lines": [
+      "THE UNIVERSITY OF EASTMERE",
+      "",
+      "This is to certify that",
+      "MINA FARAHANI",
+      "having fulfilled the requirements was admitted to the degree of",
+      "Bachelor of Engineering",
+      "on the 14th day of July 2017"
+    ],
+    "expected": {
+      "document_type": "degree_certificate",
+      "fields": {
+        "graduate_name": "MINA FARAHANI",
+        "degree": "Bachelor of Engineering",
+        "institution": "University of Eastmere",
+        "award_date": "2017-07-14"
+      }
+    }
+  },
+  {
+    "id": "unknown_utility_bill",
+    "description": "Irrelevant document: must be classified unknown with no invented fields.",
+    "document_lines": [
+      "Harbourside Energy",
+      "Electricity bill",
+      "Customer: Amara Okafor",
+      "Amount due: EUR 84.20",
+      "Due date: 2026-10-01"
+    ],
+    "expected": {
+      "document_type": "unknown",
+      "fields": {}
+    }
+  }
+]

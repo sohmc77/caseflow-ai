@@ -1,0 +1,112 @@
+[
+  {
+    "id": "all_satisfied",
+    "description": "Every requirement has one valid document.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport",
+         "fields": {"full_name": "OKAFOR, AMARA", "passport_number": "AR4471902", "expiry_date": "2031-03-14"}},
+        {"document_id": 2, "document_type": "employment_letter",
+         "fields": {"employee_name": "Amara Okafor", "employer_name": "Brightline Robotics GmbH",
+                    "job_title": "Senior Controls Engineer", "start_date": "2027-02-01"}},
+        {"document_id": 3, "document_type": "bank_statement",
+         "fields": {"account_holder": "Amara Okafor", "closing_balance": "12000.00", "currency": "EUR"}}
+      ]
+    },
+    "expected": {"identity": "satisfied", "job_offer": "satisfied", "proof_of_funds": "satisfied"}
+  },
+  {
+    "id": "passport_expiring_soon",
+    "description": "Passport expires within the 180-day validity window.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport",
+         "fields": {"full_name": "Amara Okafor", "passport_number": "AR4471902", "expiry_date": "2026-12-01"}},
+        {"document_id": 2, "document_type": "employment_letter",
+         "fields": {"employee_name": "Amara Okafor", "employer_name": "Brightline Robotics GmbH",
+                    "job_title": "Engineer", "start_date": "2027-02-01"}},
+        {"document_id": 3, "document_type": "bank_statement",
+         "fields": {"account_holder": "Amara Okafor", "closing_balance": "15000", "currency": "EUR"}}
+      ]
+    },
+    "expected": {"identity": "not_satisfied", "job_offer": "satisfied", "proof_of_funds": "satisfied"}
+  },
+  {
+    "id": "missing_bank_statement",
+    "description": "No document for proof_of_funds was uploaded.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport",
+         "fields": {"full_name": "Amara Okafor", "passport_number": "AR4471902", "expiry_date": "2031-03-14"}},
+        {"document_id": 2, "document_type": "employment_letter",
+         "fields": {"employee_name": "Amara Okafor", "employer_name": "Brightline Robotics GmbH",
+                    "job_title": "Engineer", "start_date": "2027-02-01"}}
+      ]
+    },
+    "expected": {"identity": "satisfied", "job_offer": "satisfied", "proof_of_funds": "missing"}
+  },
+  {
+    "id": "funds_wrong_currency_and_holder",
+    "description": "Bank statement in USD and in someone else's name; no FX conversion is attempted.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport",
+         "fields": {"full_name": "Amara Okafor", "passport_number": "AR4471902", "expiry_date": "2031-03-14"}},
+        {"document_id": 3, "document_type": "bank_statement",
+         "fields": {"account_holder": "Lucas Brennan", "closing_balance": "20000", "currency": "USD"}}
+      ]
+    },
+    "expected": {"identity": "satisfied", "job_offer": "missing", "proof_of_funds": "not_satisfied"}
+  },
+  {
+    "id": "unreviewed_document",
+    "description": "Document 3 failed automated review; its requirement must go to a human, not be marked missing.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport",
+         "fields": {"full_name": "Amara Okafor", "passport_number": "AR4471902", "expiry_date": "2031-03-14"}},
+        {"document_id": 2, "document_type": "employment_letter",
+         "fields": {"employee_name": "Amara Okafor", "employer_name": "Brightline Robotics GmbH",
+                    "job_title": "Engineer", "start_date": "2027-02-01"}}
+      ],
+      "unreviewed_document_ids": [3]
+    },
+    "expected": {"identity": "satisfied", "job_offer": "satisfied", "proof_of_funds": "needs_review"}
+  },
+  {
+    "id": "two_passports_one_expired",
+    "description": "An expired old passport and a valid new one; the requirement is satisfied by the new one.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport",
+         "fields": {"full_name": "Amara Okafor", "passport_number": "AR0000001", "expiry_date": "2025-01-10"}},
+        {"document_id": 4, "document_type": "passport",
+         "fields": {"full_name": "Amara Okafor", "passport_number": "AR4471902", "expiry_date": "2031-03-14"}},
+        {"document_id": 2, "document_type": "employment_letter",
+         "fields": {"employee_name": "Amara Okafor", "employer_name": "Brightline Robotics GmbH",
+                    "job_title": "Engineer", "start_date": "2027-02-01"}},
+        {"document_id": 3, "document_type": "bank_statement",
+         "fields": {"account_holder": "Amara Okafor", "closing_balance": "10000.00", "currency": "EUR"}}
+      ]
+    },
+    "expected": {"identity": "satisfied", "job_offer": "satisfied", "proof_of_funds": "satisfied"}
+  }
+]

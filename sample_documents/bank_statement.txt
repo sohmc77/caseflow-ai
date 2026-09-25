@@ -1,0 +1,10 @@
+Northbank Savings (fictional)
+Account Statement
+
+Account Holder: Amara Okafor
+Account Number: ****5521
+Statement Date: 2026-08-31
+Currency: EUR
+
+Opening Balance: EUR 9,120.40
+Closing Balance: EUR 8,250.00

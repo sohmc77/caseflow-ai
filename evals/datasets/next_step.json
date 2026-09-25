@@ -1,0 +1,133 @@
+[
+  {
+    "id": "all_satisfied_ready",
+    "description": "Everything passes: accept each document, mark each requirement, propose ready_for_submission.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport", "fields": {"full_name": "Amara Okafor"}},
+        {"document_id": 2, "document_type": "employment_letter", "fields": {"employee_name": "Amara Okafor"}},
+        {"document_id": 3, "document_type": "bank_statement", "fields": {"account_holder": "Amara Okafor"}}
+      ]
+    },
+    "evaluation": {
+      "case_id": 1,
+      "evaluations": [
+        {"requirement_code": "identity", "status": "satisfied", "document_ids": [1], "reasons": ["all rules passed"]},
+        {"requirement_code": "job_offer", "status": "satisfied", "document_ids": [2], "reasons": ["all rules passed"]},
+        {"requirement_code": "proof_of_funds", "status": "satisfied", "document_ids": [3], "reasons": ["all rules passed"]}
+      ]
+    },
+    "must_include": [
+      {"kind": "accept_document", "document_id": 1},
+      {"kind": "accept_document", "document_id": 2},
+      {"kind": "accept_document", "document_id": 3},
+      {"kind": "mark_requirement_satisfied", "requirement_code": "identity"},
+      {"kind": "mark_requirement_satisfied", "requirement_code": "job_offer"},
+      {"kind": "mark_requirement_satisfied", "requirement_code": "proof_of_funds"},
+      {"kind": "change_case_status"}
+    ],
+    "must_not_include": [
+      {"kind": "reject_document"},
+      {"kind": "request_document"}
+    ]
+  },
+  {
+    "id": "insufficient_funds",
+    "description": "Bank statement fails the threshold: reject it and request a replacement; never mark ready.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport", "fields": {"full_name": "Amara Okafor"}},
+        {"document_id": 2, "document_type": "employment_letter", "fields": {"employee_name": "Amara Okafor"}},
+        {"document_id": 3, "document_type": "bank_statement", "fields": {"account_holder": "Amara Okafor"}}
+      ]
+    },
+    "evaluation": {
+      "case_id": 1,
+      "evaluations": [
+        {"requirement_code": "identity", "status": "satisfied", "document_ids": [1], "reasons": ["all rules passed"]},
+        {"requirement_code": "job_offer", "status": "satisfied", "document_ids": [2], "reasons": ["all rules passed"]},
+        {"requirement_code": "proof_of_funds", "status": "not_satisfied", "document_ids": [3],
+         "reasons": ["closing_balance 8250.00 EUR is below the required 10000 EUR"]}
+      ]
+    },
+    "must_include": [
+      {"kind": "reject_document", "document_id": 3},
+      {"kind": "request_document", "requirement_code": "proof_of_funds"},
+      {"kind": "accept_document", "document_id": 1}
+    ],
+    "must_not_include": [
+      {"kind": "accept_document", "document_id": 3},
+      {"kind": "mark_requirement_satisfied", "requirement_code": "proof_of_funds"},
+      {"kind": "change_case_status"}
+    ]
+  },
+  {
+    "id": "already_accepted_no_duplicates",
+    "description": "Document 1 and 'identity' were approved earlier; do not propose them again.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "case_status": "open",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport", "fields": {"full_name": "Amara Okafor"}}
+      ],
+      "document_statuses": {"1": "accepted"},
+      "satisfied_requirements": ["identity"]
+    },
+    "evaluation": {
+      "case_id": 1,
+      "evaluations": [
+        {"requirement_code": "identity", "status": "satisfied", "document_ids": [1], "reasons": ["all rules passed"]},
+        {"requirement_code": "job_offer", "status": "missing", "document_ids": [], "reasons": ["no employment letter"]},
+        {"requirement_code": "proof_of_funds", "status": "missing", "document_ids": [], "reasons": ["no bank statement"]}
+      ]
+    },
+    "must_include": [
+      {"kind": "request_document", "requirement_code": "job_offer"},
+      {"kind": "request_document", "requirement_code": "proof_of_funds"}
+    ],
+    "must_not_include": [
+      {"kind": "accept_document", "document_id": 1},
+      {"kind": "mark_requirement_satisfied", "requirement_code": "identity"},
+      {"kind": "change_case_status"}
+    ]
+  },
+  {
+    "id": "unreviewed_document_flagged",
+    "description": "A document failed automated review; it must be flagged for a human.",
+    "case": {
+      "case_type": "work_permit",
+      "applicant_name": "Amara Okafor",
+      "as_of": "2026-09-01",
+      "extractions": [
+        {"document_id": 1, "document_type": "passport", "fields": {"full_name": "Amara Okafor"}},
+        {"document_id": 2, "document_type": "employment_letter", "fields": {"employee_name": "Amara Okafor"}}
+      ],
+      "unreviewed_document_ids": [3]
+    },
+    "evaluation": {
+      "case_id": 1,
+      "evaluations": [
+        {"requirement_code": "identity", "status": "satisfied", "document_ids": [1], "reasons": ["all rules passed"]},
+        {"requirement_code": "job_offer", "status": "satisfied", "document_ids": [2], "reasons": ["all rules passed"]},
+        {"requirement_code": "proof_of_funds", "status": "needs_review", "document_ids": [],
+         "reasons": ["document 3 could not be reviewed automatically"]}
+      ]
+    },
+    "must_include": [
+      {"kind": "flag_for_review", "document_id": 3},
+      {"kind": "flag_for_review", "requirement_code": "proof_of_funds"}
+    ],
+    "must_not_include": [
+      {"kind": "change_case_status"},
+      {"kind": "request_document", "requirement_code": "proof_of_funds"}
+    ]
+  }
+]
